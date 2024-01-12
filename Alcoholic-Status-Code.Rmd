@@ -1,0 +1,415 @@
+---
+title: 'Predicting Alcoholic Status'
+author: 'Ahyoung Ju, Ashton Chung, Emily Pham, Johan Chua, Nathan Lim'
+date: "December 17, 2023"
+output: 
+  pdf_document:
+    toc: yes
+    toc_depth: 2
+---
+
+```{r Setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, error=TRUE)
+library(tidyverse)
+library(caret)
+library(e1071)
+library(dplyr)
+library(MASS)
+library(glmnet)
+library(ggplot2)
+library(ISLR)
+library(stats)
+library(cluster)
+library(tree)
+library(randomForest)
+library(car)
+library(gbm)
+library(splines)
+library(gam)
+library(akima)
+library(leaps)
+library(pls)
+library(class)
+library(boot)
+library(ROCR) 
+library(rpart)
+library(mice)
+```
+
+# Data Analysis
+
+## Loading Data
+
+### Load Original Data
+```{r}
+# training data
+train_original <- read.csv("SAtrain.csv")
+
+train_new <- train_original[,-1]
+train_new$sex <- as.factor(train_new$sex)
+train_new$hear_left <- as.factor(train_new$hear_left)
+train_new$hear_right <- as.factor(train_new$hear_right)
+train_new$BMI.Category <- as.factor(train_new$BMI.Category)
+train_new$AGE.Category <- as.factor(train_new$AGE.Category)
+train_new$Smoking.Status <- as.factor(train_new$Smoking.Status)
+train_new$Alcoholic.Status <- as.factor(train_new$Alcoholic.Status)
+summary(train_new)
+
+# testing data (no Y)
+test_original <- read.csv("SAtestNoY.csv")
+
+test_new <- test_original[,-1]
+test_new$sex <- as.factor(test_new$sex)
+test_new$hear_left <- as.factor(test_new$hear_left)
+test_new$hear_right <- as.factor(test_new$hear_right)
+test_new$BMI.Category <- as.factor(test_new$BMI.Category)
+test_new$AGE.Category <- as.factor(test_new$AGE.Category)
+test_new$Smoking.Status <- as.factor(test_new$Smoking.Status)
+summary(test_new)
+```
+
+### Load MICE Data
+```{r}
+# training data
+mice_train <- read.csv("micetrain.csv")
+
+mice_train$sex <- as.factor(mice_train$sex)
+mice_train$hear_left <- as.factor(mice_train$hear_left)
+mice_train$hear_right <- as.factor(mice_train$hear_right)
+mice_train$BMI.Category <- as.factor(mice_train$BMI.Category)
+mice_train$AGE.Category <- as.factor(mice_train$AGE.Category)
+mice_train$Smoking.Status <- as.factor(mice_train$Smoking.Status)
+mice_train$Alcoholic.Status <- as.factor(mice_train$Alcoholic.Status)
+summary(mice_train)
+
+# testing data (no Y)
+mice_test <- read.csv("micetest.csv")
+
+mice_test$sex <- as.factor(mice_test$sex)
+mice_test$hear_left <- as.factor(mice_test$hear_left)
+mice_test$hear_right <- as.factor(mice_test$hear_right)
+mice_test$BMI.Category <- as.factor(mice_test$BMI.Category)
+mice_test$AGE.Category <- as.factor(mice_test$AGE.Category)
+mice_test$Smoking.Status <- as.factor(mice_test$Smoking.Status)
+summary(mice_test)
+```
+
+### Load HMISC Data
+```{r}
+# training data
+h_train <- read.csv("hmisctrain.csv")
+
+h_train$sex <- as.factor(h_train$sex)
+h_train$hear_left <- as.factor(h_train$hear_left)
+h_train$hear_right <- as.factor(h_train$hear_right)
+h_train$BMI.Category <- as.factor(h_train$BMI.Category)
+h_train$AGE.Category <- as.factor(h_train$AGE.Category)
+h_train$Smoking.Status <- as.factor(h_train$Smoking.Status)
+h_train$Alcoholic.Status <- as.factor(h_train$Alcoholic.Status)
+summary(h_train)
+
+# testing data (no Y)
+h_test <- read.csv("hmisctest.csv")
+
+h_test$sex <- as.factor(h_test$sex)
+h_test$hear_left <- as.factor(h_test$hear_left)
+h_test$hear_right <- as.factor(h_test$hear_right)
+h_test$BMI.Category <- as.factor(h_test$BMI.Category)
+h_test$AGE.Category <- as.factor(h_test$AGE.Category)
+h_test$Smoking.Status <- as.factor(h_test$Smoking.Status)
+summary(h_test)
+```
+
+## Imputation
+
+### Imputing with Median/Mode
+```{r}
+cat_index <- c(1,8:9,24:27)
+
+my_impute <- function(data) {
+  for (col in names(data)) {
+    if (is.numeric(data[[col]])) {
+      median_value <- median(data[[col]], na.rm = TRUE)
+      data[[col]][is.na(data[[col]])] <- median_value
+    } else {
+      mode_value <- names(sort(table(data[[col]], exclude = NULL), decreasing = TRUE))[1]
+      data[[col]][is.na(data[[col]])] <- mode_value
+    }
+  }
+}
+
+middle_train <- train_new
+middle_train <- my_impute(middle_train)
+
+middle_test <- test_new
+middle_test <- my_impute(middle_test)
+```
+
+### Imputing Missing Values with MICE
+```{r}
+library(mice)
+
+# cat/num predictor index
+str(train_new[,c(1,8:9,24:27)])
+str(train_new[,-c(1,8:9,24:27)])
+cat_predictors_train <- c(1,8:9,24:27)
+
+str(test_new[,c(1,8:9,24:26)])
+str(test_new[,-c(1,8:9,24:26)])
+cat_predictors_test <- c(1,8:9,24:26)
+
+# impute numeric predictors
+num_imputation_train <- mice(train_new[, -cat_predictors_train], method = "pmm", m = 1)
+
+mice_train <- train_new
+mice_train[, -cat_predictors_train] <- complete(num_imputation_train, 1)
+anyNA(mice_train[, -cat_predictors_train])
+
+num_imputation_test <- mice(test_new[, -cat_predictors_test], method = "pmm", m = 1)
+
+mice_test <- test_new
+mice_test[, -cat_predictors_test] <- complete(num_imputation_test, 1)
+anyNA(mice_test[, -cat_predictors_test])
+
+# impute categorical predictors
+cat_imputation_train <- mice(train_new[, cat_predictors_train], method = "polyreg", m = 1)
+
+mice_train[, cat_predictors_train] <- complete(cat_imputation_train, 1)
+anyNA(mice_train[, cat_predictors_train])
+
+cat_imputation_test <- mice(test_new[, cat_predictors_test], method = "polyreg", m = 1)
+
+mice_test[, cat_predictors_test] <- complete(cat_imputation_test, 1)
+anyNA(mice_test[, cat_predictors_test])
+
+# final check
+sum(is.na(mice_train))
+sum(is.na(mice_test))
+
+# export new datasets
+write.csv(mice_train, file = "micetrain.csv", row.names = FALSE)
+write.csv(mice_test, file = "micetest.csv", row.names = FALSE)
+```
+
+### Imputing using HMISC
+```{r}
+library(Hmisc)
+
+hmisc_train <- aregImpute(~ Alcoholic.Status + sex + age + height + weight + waistline + sight_left + sight_right + hear_left + hear_right + SBP + DBP + BLDS + tot_chole + HDL_chole + LDL_chole + triglyceride + hemoglobin + urine_protein + serum_creatinine + SGOT_AST + SGOT_ALT + gamma_GTP + BMI + BMI.Category + AGE.Category + Smoking.Status, data = train)
+
+hmisc_test <- aregImpute(~ sex + age + height + weight + waistline + sight_left + sight_right + hear_left + hear_right + SBP + DBP + BLDS + tot_chole + HDL_chole + LDL_chole + triglyceride + hemoglobin + urine_protein + serum_creatinine + SGOT_AST + SGOT_ALT + gamma_GTP + BMI + BMI.Category + AGE.Category + Smoking.Status, data = test)
+
+write.csv(hmisc_train, file = "hmisctrain.csv", row.names = FALSE)
+write.csv(hmisc_test, file = "hmisctest.csv", row.names = FALSE)
+```
+
+# Methods and Models
+
+## Predicting with XGBoost
+```{r}
+library(tidyverse)
+library(caret)
+library(xgboost)
+
+# create training / testing
+set.seed(101603)
+index <- mice_train$Alcoholic.Status %>% createDataPartition(p = 0.8, list = F) 
+xg_train <- mice_train[index, ]
+xg_test <- mice_train[-index, ]
+
+# fit model with training
+set.seed(101603)
+xg_model <- train(Alcoholic.Status ~ ., data = xg_train, method = "xgbTree",
+                   trControl = trainControl("cv", number = 10))
+varImp(xg_model)
+
+# predictions with own testing subset
+xg_pred <- xg_model %>% predict(xg_test)
+mean(xg_pred == xg_test$Alcoholic.Status) # estimated error rate
+
+## Using Provided Testing Set
+
+# predicting testing
+xg_pred1 <- xg_model %>% predict(mice_test)
+
+# submission file
+xg_submission <- data.frame('Id' = test_original['ID'], 'Alchoholic.Status' = xg_pred1)
+write_csv(xg_submission, 'xg_submission.csv')
+```
+
+## XGBoost Variations
+```{r}
+# subset of predictors
+rownames(varImp(xg_model)[[1]])[1:20]
+colnames(mice_train)
+
+# using full mice_train instead of xg_train
+xg_model2 <- train(Alcoholic.Status ~ ., data = mice_train, method = "xgbTree",
+                   trControl = trainControl("cv", number = 10))
+xg_pred2 <- xg_model2 %>% predict(mice_test)
+xg_submission2 <- data.frame('Id' = test_original['ID'], 'Alchoholic.Status' = xg_pred2)
+write_csv(xg_submission2, 'xg_submission2.csv')
+
+
+# using subset of predictors (~ top 20)
+xg_model3 <- train(Alcoholic.Status ~ ., 
+                   data = mice_train[,-c(4, 6, 7, 8, 9, 11, 18, 19, 23)], 
+                   method = "xgbTree",
+                   trControl = trainControl("cv", number = 10))
+
+xg_pred3 <- xg_model3 %>% predict(mice_test)
+xg_submission3 <- data.frame('Id' = test_original['ID'], 'Alchoholic.Status' = xg_pred3)
+write_csv(xg_submission3, 'xg_submission3.csv')
+
+# using even smaller subset of predictors (~ top 10)
+xg_model4 <- train(Alcoholic.Status ~ ., 
+                   data = mice_train[,-c(4, 6, 7, 8, 9, 11, 18, 19, 23, 5, 10, 12, 13, 20, 24, 25)], 
+                   method = "xgbTree",
+                   trControl = trainControl("cv", number = 10))
+
+xg_pred4 <- xg_model4 %>% predict(mice_test)
+xg_submission4 <- data.frame('Id' = test_original['ID'], 'Alchoholic.Status' = xg_pred4)
+write_csv(xg_submission4, 'xg_submission4.csv')
+
+
+# using hmisc data + subset of predictors
+xg_modelH1 <- train(Alcoholic.Status ~ ., 
+                   data = h_train[,-c(4, 6, 7, 8, 9, 11, 18, 19, 23)], 
+                   method = "xgbTree",
+                   trControl = trainControl("cv", number = 10))
+
+xg_predH1 <- xg_modelH1 %>% predict(h_test)
+xg_submissionH1 <- data.frame('Id' = test_original['ID'], 'Alchoholic.Status' = xg_predH1)
+write_csv(xg_submissionH1, 'xg_submissionH1.csv')
+```
+
+## GBM
+```{r}
+# full model
+gbm_model <- gbm(
+  formula = Alcoholic.Status ~ .,
+  data = mice_train,
+  distribution = "gaussian",  # SSE loss function
+  n.trees = 5000,
+  shrinkage = 0.1,
+  interaction.depth = 3,
+  n.minobsinnode = 10,
+  cv.folds = 10
+)
+
+gbm_pred <- gbm_model %>% predict(mice_test) # vector of 1 < x < 2
+gbm_pred_YN <- rep("N", 30000)
+gbm_pred_YN[gbm_pred > 1.5] <- "Y"
+
+gbm_submission <- data.frame('Id' = test_original['ID'], 'Alchoholic.Status' = gbm_pred_YN)
+write_csv(gbm_submission, 'gbm_submission.csv')
+
+# subset of predictors
+gbm_model2 <- gbm(
+  formula = Alcoholic.Status ~ .,
+  data = mice_train[,-c(4, 6, 7, 8, 9, 11, 18, 19, 23)],
+  distribution = "gaussian",  # SSE loss function
+  n.trees = 5000,
+  shrinkage = 0.1,
+  interaction.depth = 3,
+  n.minobsinnode = 10,
+  cv.folds = 10
+)
+
+gbm_pred2 <- gbm_model2 %>% predict(mice_test) # vector of 1 < x < 2
+gbm_pred_YN2 <- rep("N", 30000)
+gbm_pred_YN2[gbm_pred2 > 1.5] <- "Y"
+
+gbm_submission2 <- data.frame('Id' = test_original['ID'], 'Alchoholic.Status' = gbm_pred_YN2)
+write_csv(gbm_submission2, 'gbm_submission2.csv')
+
+# hmisc data + subset of predictors
+gbm_modelH1 <- gbm(
+  formula = Alcoholic.Status ~ .,
+  data = h_train[,-c(4, 6, 7, 8, 9, 11, 18, 19, 23)],
+  distribution = "gaussian",  # SSE loss function
+  n.trees = 5000,
+  shrinkage = 0.1,
+  interaction.depth = 3,
+  n.minobsinnode = 10,
+  cv.folds = 10
+)
+
+gbm_predH1 <- gbm_modelH1 %>% predict(h_test) # vector of 1 < x < 2
+gbm_pred_YNH1 <- rep("N", 30000)
+gbm_pred_YNH1[gbm_predH1 > 1.5] <- "Y"
+
+gbm_submissionH1 <- data.frame('Id' = test_original['ID'], 'Alchoholic.Status' = gbm_pred_YNH1)
+write_csv(gbm_submissionH1, 'gbm_submissionH1.csv')
+```
+
+
+## LDA & QDA
+```{r}
+lda_fit <- lda(Alcoholic.Status ~., 
+               data = h_train[,-c(4, 6, 7, 8, 9, 11, 18, 19, 23)], 
+               CV = TRUE)
+table(lda_fit$class,h_train$Alcoholic.Status)
+mean(lda_fit$class == h_train$Alcoholic.Status)
+
+qda_fit <- qda(Alcoholic.Status ~., 
+               data = h_train[,-c(4, 6, 7, 8, 9, 11, 18, 19, 23)], 
+               CV = TRUE)
+table(qda_fit$class, h_train$Alcoholic.Status)
+mean(qda_fit$class == h_train$Alcoholic.Status)
+```
+
+## SVM
+```{r}
+# SVM model
+svm_fit <- svm(Alcoholic.Status~., data = h_train[,-c(4, 6, 7, 8, 9, 11, 18, 19, 23)],
+               kernel="linear", gamma=0.8, type="C-classification")
+
+svm_pred <- predict(svmfit, newdata = h_test)
+table(svm_pred, h_test$Alcoholic.Status)
+1-mean(preds!=h_test$Alcoholic.Status)
+```
+
+## Tree
+```{r}
+tree_fit <- rpart(Alcoholic.Status ~ ., data = h_train, method = "class")
+tree_pred <- predict(tree_fit, newdata = h_test, type = "class")
+sum(tree_predictions == test$Alcoholic.Status) / length(test$Alcoholic.Status)
+```
+
+## KNN
+```{r}
+# scaling
+h_train_scaled <- scale(h_train[ , c(-2, -9, -10, -19, -25, -26, -27, -28)])
+h_test_scaled <- scale(h_test[ , c(-2, -9, -10, -19, -25, -26, -27, -28)])
+
+# knn
+knn_fit <- knn(h_train_scaled, h_test_scaled, h_train$Alcoholic.Status, k = 100)
+
+# testing
+table(knn_fit, h_test$Alcoholic.Status)
+knn_submission <- data.frame('Id' = imputed_test['ID'], 'Alchoholic.Status' = alctrain_train_knn)
+write_csv(knn_submission, 'knn_submission.csv')
+```
+
+# Results and Final Reccomendations
+
+## Plots
+```{r}
+library(tidyverse)
+library(knitr)
+
+accuracy <- data.frame(Model = c("KNN", "Logistic", "SVM", "LDA", "QDA", "Tree", "XGBoost", "GBM"),
+                    Accuracy.Rate = c(0.71083, 0.7211, 0.71813, 0.72202, 0.70242, 0.49994, 0.72628, 0.73136))
+#kable(error)
+
+ggplot(accuracy, aes(x = Model, y = Accuracy.Rate, fill = Model)) + 
+  geom_bar(stat = "identity") +
+  coord_cartesian(ylim = c(0.70, 0.74)) +
+  labs(title = "Accuracy Rates for Each Model", x = "Model", y = "Accuracy Rate")
+
+accuracy <- arrange(accuracy, desc(Accuracy.Rate))
+accuracy <- cbind(Rank = 1:8, accuracy)
+kable(accuracy, caption = "Models Ranked by Accuracy Rate")
+```
+
